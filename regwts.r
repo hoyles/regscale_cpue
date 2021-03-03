@@ -19,23 +19,20 @@ library(cluster)
 library(beanplot)
 library(survival)
 library(cpue.rfmo)
+
 library(mgcv)
 library(here)
 
 # Regional scaling
 ########################################################
-#basedir <- "~/../OneDrive_personal/OneDrive/"
-Rdir <- here()
-basedir <- paste0(Rdir,"/..")
-projdir <- paste0(basedir, "/..")
+repodir <- here()
+projdir <- paste0(repodir,"/..")
 
-regwt_dir <- paste0(jointdir,"regwt_alb/")
-dir.create(regwt_dir)
+regscale_wkdir <- paste0(projdir,"/regscale_wkdir")
+dir.create(regscale_wkdir)
+setwd(regscale_wkdir)
 
-setwd(regwt_dir)
-
-
-#source("../../RFiles/support_functions.r")
+source(paste0(repodir, "/support_functions.r"))
 
 # Generate data
 # dat <- data.frame(x = 1:500,z = runif(500),k = as.factor(sample(c("a","b"),size = 500,replace = TRUE)))
@@ -76,124 +73,9 @@ setwd(regwt_dir)
 #sp_hbf <- BR1$coefficients[grep("ns(hbf",rownames(BR1$coefficients),fixed = TRUE)]
 
 
-# load aggregated data
-#lldat <- read.csv("IOTC-2016-DATASETS-CELongline.csv",stringsAsFactors = F)
-prepCE <- function(CE) {
-  CE[1,]
-  table(CE$MonthStart)
-  # convert these grids to centlat and centlong
-  CE$Grid <- as.character(CE$Grid)
-  table(CE$Grid)
-  CE <- CE[CE$Grid != "F57",]
-  CE <- CE[CE$Grid != "9000080",]
-  CE <- CE[CE$Grid != "9000020",]
-  addlat <- c(5,10,10,20,1,5)
-  addlon <- c(10,20,10,20,1,5)
-  addtp <- as.numeric(substring(CE$Grid,1,1))
-  a <- as.numeric(substring(CE$Grid,2,2))
-  CE$Grid[a == 0]
-  sg <- c(1,-1)[as.numeric(substring(CE$Grid,2,2))]
-  # CE$latmin <- as.numeric(substring(CE$Grid,3,4)) * sg
-  # CE$latmax <- CE$latmin + addlat[addtp]
-  # CE$lonmin <- as.numeric(substring(CE$Grid,5,7))
-  # CE$lonmax <- CE$lonmin + addlon[addtp]
-  # CE$centlat <- (CE$latmin + CE$latmax)/2
-  # CE$centlon <- (CE$lonmin + CE$lonmax)/2
-  # CE$lat5 <- 5 * floor(CE$centlat/5) + 2.5
-  # CE$lon5 <- 5 * floor(CE$centlon/5) + 2.5
-
-  CE$latin <- as.numeric(substring(CE$Grid,3,4)) * sg
-  CE$latout <- CE$latin + (addlat[addtp] * sg)
-  CE$lonmin <- as.numeric(substring(CE$Grid,5,7))
-  CE$lonmax <- CE$lonmin + addlon[addtp]
-  CE$centlat <- (CE$latin + CE$latout)/2
-  CE$centlon <- (CE$lonmin + CE$lonmax)/2
-  CE$lat5 <- 5 * floor(CE$centlat/5) + 2.5
-  CE$lon5 <- 5 * floor(CE$centlon/5) + 2.5
-
-  colnames(CE)
-  head(CE)
-  table(CE$MonthS,CE$MonthE)
-  # change the approach from an array of lengths across to a single column
-  CE$yrqtr <-  as.factor(CE$Year + rep(c(0.125,0.375,0.625,0.875),each = 3)[CE$MonthE])
-  CE$yq <- as.numeric(as.character(CE$yrqtr))
-  CE$latlong <- as.factor(paste(CE$lat5,CE$lon5, sep = "_"))
-  # CE$latlon1 <- as.factor(paste(0.5 + CE$latmin,0.5+CE$lonmin, sep = "_"))
-  # CE$latlon2 <- as.factor(paste(1 + 2*floor(CE$latmin/2),1+2*floor(CE$lonmin/2), sep = "_"))
-  # CE$latlon3 <- as.factor(paste(1.5 + 3*floor(CE$latmin/3),1.5+3*floor(CE$lonmin/3), sep = "_"))
-  CE$latlon1 <- as.factor(paste(sg*0.5 + CE$latin,0.5+CE$lonmin, sep = "_"))
-  CE$latlon2 <- as.factor(paste(sg*1   + 2*floor(CE$latin/2),1+2*floor(CE$lonmin/2), sep = "_"))
-  CE$latlon3 <- as.factor(paste(sg*1.5 + 3*floor(CE$latin/3),1.5+3*floor(CE$lonmin/3), sep = "_"))
-
-  CE <- setup_IO_regions(CE, regY2=TRUE, regA4 = TRUE)
-  return(CE)
-  }
-
-plot_patterns <- function(llmn, sp, spreg) {
-  lab1 <- unlist(sapply(names(llmn),strsplit,"_"))
-  nlats <- length(lab1)/3
-  lats <- as.numeric(lab1[3 * seq(1:nlats) - 1])
-  lons <- as.numeric(lab1[3 * seq(1:nlats)])
-  pl <- tapply(llmn,list(lats,lons),mean)
-  windows(width = 12, height = 8)
-  latseq <- as.numeric(rownames(pl))
-  lonseq <- as.numeric(colnames(pl))
-  if(sp == "ALB") image(lonseq,latseq,t(pl),xlab="Longitude",ylab="Latitude",main=sp, ylim = c(-42, 0), xlim = c(18, 130))
-  if(sp == "BET") image(lonseq,latseq,t(pl),xlab="Longitude",ylab="Latitude",main=sp, ylim = c(-42, 25), xlim = c(18, 130))
-  if(sp == "YFT") image(lonseq,latseq,t(pl),xlab="Longitude",ylab="Latitude",main=sp, ylim = c(-42, 25), xlim = c(18, 130))
-  contour(lonseq,latseq,t(pl),add = TRUE, labcex = 1)
-  plot_IO(plot_title = "", uselims = c(20, 130, -50, 25), sp = spreg, newm=F, lwdm=3, axes = F, tcol = 1, mapfill = TRUE)
-}
-
-mk_wts <- function(dat, wttype, catch = NULL, sp = NULL, cell_areas = NA) {
-  if (wttype == "equal")
-    wts <- NULL
-  if (wttype == "propn")
-    wts <- catch
-  # if (wttype == "area") {
-  #   a <- tapply(dat$latlong, list(dat$latlong, dat$yrqtr), length)
-  #   i <- match(dat$latlong, rownames(a))
-  #   j <- match(dat$yrqtr, colnames(a))
-  #   n <- mapply("[", list(a), i, j)
-  #   wts <- 1/n
-  # }
-  # if (wttype == "cell_area") {
-  #   areas <- cell_areas$garea[match(dat$latlong, cell_areas$latlong)]
-  #   a <- tapply(dat$latlong, list(dat$latlong, dat$yrqtr), length)
-  #   i <- match(dat$latlong, rownames(a))
-  #   j <- match(dat$yrqtr, colnames(a))
-  #   n <- mapply("[", list(a), i, j)
-  #   wts <- areas/n
-  # }
-  if (wttype == "area") {
-    a <- aggregate(dat$latlong, list(dat$latlong, dat$yrqtr), length)
-    i <- match(paste(dat$latlong, dat$yrqtr), paste(a[,1], a[,2]))
-    n <- a[i,3]
-    wts <- 1/n
-  }
-  if (wttype == "cell_area") {
-    areas <- cell_areas$garea[match(dat$latlong, cell_areas$latlong)]
-    a <- aggregate(dat$latlong, list(dat$latlong, dat$yrqtr), length)
-    i <- match(paste(dat$latlong, dat$yrqtr), paste(a[,1], a[,2]))
-    n <- a[i,3]
-    wts <- areas/n
-  }
-  if (wttype == "catch") {
-    if (is.null(catch))
-      catch <- tapply(dat[, sp], list(dat$latlong), sum)
-    a <- tapply(dat$latlong, list(dat$latlong, dat$yrqtr), length)
-    i <- match(dat$latlong, rownames(a))
-    j <- match(dat$yrqtr, colnames(a))
-    n <- mapply("[", list(a), i, j)
-    cwts <- mapply("[", list(catch), i)/sum(catch)
-    wts <- cwts/n
-  }
-  return(wts)
-}
-
 windows(width=10, height = 10)
-plot_IO(plot_title = "", uselims = c(20, 130, -50, 25), sp = "ALB4", newm=TRUE, lwdm=3, axes = T, tcol = 1, mapfill = TRUE, bgc = "lightgrey")
-savePlot("map_ALB_regions", type = "png")
+plot_IO(plot_title = "", uselims = c(20, 130, -50, 25), sp = "YFT", newm=TRUE, lwdm=3, axes = T, tcol = 1, mapfill = TRUE, bgc = "lightgrey")
+savePlot("map_YFT_regions", type = "png")
 
 
 ## Set up data
@@ -681,7 +563,7 @@ alb79nd_1 <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1_b/outputs/Joint_regA4_R1
 alb79nd_2 <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1_b/outputs/Joint_regA4_R2_dellog_vessid_79nd_yq.csv"))
 alb79nd_3 <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1_b/outputs/Joint_regA4_R3_dellog_vessid_79nd_yq.csv"))
 alb79nd_4 <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1_b/outputs/Joint_regA4_R4_dellog_vessid_79nd_yq.csv"))
-load(file = paste0("~/../OneDrive/Consulting/IOTC/2018_CPUE/joint/regwt_alb/allwts.RData"))
+load(file = paste0("~/../OneDrive/Consulting/IOTC/2018_CPUE/joint/regscale_alb/allwts.RData"))
 
 wts8 <- allwts$ALB4_7594_wts8[c(1,2,3,4)]
 wts8_early <- allwts$ALB4_6375_wts8[c(1,2,3,4)]
