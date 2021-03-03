@@ -1,3 +1,27 @@
+# Regional weighting
+########################################################
+projdir <- "~/../OneDrive_personal/OneDrive/Consulting/IOTC/2018_CPUE/"
+projdir <- "~/../OneDrive/Consulting/IOTC/2018_CPUE/"
+Rdir <- paste0(projdir, "Rfiles/")
+jpdir <- paste0(projdir, "JP/")
+krdir <- paste0(projdir, "KR/")
+sydir <- paste0(projdir, "SY/")
+twdir <- paste0(projdir, "TW/")
+jointdir <- paste0(projdir, "joint/")
+jntalysis_dir <- paste0(jointdir, "analyses/")
+projdir17 <- "~/../OneDrive/Consulting/IOTC/2017_CPUE/"
+jointdir17 <- paste0(projdir17, "joint/")
+jntalysis_dir17 <- paste0(jointdir17, "analyses/")
+
+regwt_dir <- paste0(jointdir,"regwt/")
+regwt_dir2 <- paste0(jointdir,"regwt2/")
+#dir.create(regwt_dir2)
+
+setwd(regwt_dir)
+setwd(regwt_dir2)
+
+#install.packages("survival")
+#install.packages("stringr")
 library(stringr)
 library("date")
 library(car)
@@ -16,22 +40,10 @@ library(data.table)
 library(cluster)
 library(beanplot)
 library(survival)
-#library(cpue.rfmo)
-
+library(cpue.rfmo)
 library(mgcv)
-library(here)
-library(tidyverse)
 
-# Regional scaling
-########################################################
-repodir <- here()
-projdir <- paste0(repodir,"/..")
-
-regscale_wkdir <- paste0(projdir,"/regscale_wkdir")
-dir.create(regscale_wkdir)
-setwd(regscale_wkdir)
-
-source(paste0(repodir, "/support_functions.r"))
+#source("../../RFiles/support_functions.r")
 
 # Generate data
 # dat <- data.frame(x = 1:500,z = runif(500),k = as.factor(sample(c("a","b"),size = 500,replace = TRUE)))
@@ -72,9 +84,125 @@ source(paste0(repodir, "/support_functions.r"))
 #sp_hbf <- BR1$coefficients[grep("ns(hbf",rownames(BR1$coefficients),fixed = TRUE)]
 
 
+# load aggregated data
+#lldat <- read.csv("IOTC-2016-DATASETS-CELongline.csv",stringsAsFactors = F)
+prepCE <- function(CE) {
+  CE[1,]
+  table(CE$MonthStart)
+  # convert these grids to centlat and centlong
+  CE$Grid <- as.character(CE$Grid)
+  table(CE$Grid)
+  CE <- CE[CE$Grid != "F57",]
+  CE <- CE[CE$Grid != "9000080",]
+  CE <- CE[CE$Grid != "9000020",]
+  addlat <- c(5,10,10,20,1,5)
+  addlon <- c(10,20,10,20,1,5)
+  addtp <- as.numeric(substring(CE$Grid,1,1))
+  a <- as.numeric(substring(CE$Grid,2,2))
+  CE$Grid[a == 0]
+  sg <- c(1,-1)[as.numeric(substring(CE$Grid,2,2))]
+  # CE$latmin <- as.numeric(substring(CE$Grid,3,4)) * sg
+  # CE$latmax <- CE$latmin + addlat[addtp]
+  # CE$lonmin <- as.numeric(substring(CE$Grid,5,7))
+  # CE$lonmax <- CE$lonmin + addlon[addtp]
+  # CE$centlat <- (CE$latmin + CE$latmax)/2
+  # CE$centlon <- (CE$lonmin + CE$lonmax)/2
+  # CE$lat5 <- 5 * floor(CE$centlat/5) + 2.5
+  # CE$lon5 <- 5 * floor(CE$centlon/5) + 2.5
+
+  CE$latin <- as.numeric(substring(CE$Grid,3,4)) * sg
+  CE$latout <- CE$latin + (addlat[addtp] * sg)
+  CE$lonmin <- as.numeric(substring(CE$Grid,5,7))
+  CE$lonmax <- CE$lonmin + addlon[addtp]
+  CE$centlat <- (CE$latin + CE$latout)/2
+  CE$centlon <- (CE$lonmin + CE$lonmax)/2
+  CE$lat5 <- 5 * floor(CE$centlat/5) + 2.5
+  CE$lon5 <- 5 * floor(CE$centlon/5) + 2.5
+
+  colnames(CE)
+  head(CE)
+  table(CE$MonthS,CE$MonthE)
+  # change the approach from an array of lengths across to a single column
+  CE$yrqtr <-  as.factor(CE$Year + rep(c(0.125,0.375,0.625,0.875),each = 3)[CE$MonthE])
+  CE$yq <- as.numeric(as.character(CE$yrqtr))
+  CE$latlong <- as.factor(paste(CE$lat5,CE$lon5, sep = "_"))
+  # CE$latlon1 <- as.factor(paste(0.5 + CE$latmin,0.5+CE$lonmin, sep = "_"))
+  # CE$latlon2 <- as.factor(paste(1 + 2*floor(CE$latmin/2),1+2*floor(CE$lonmin/2), sep = "_"))
+  # CE$latlon3 <- as.factor(paste(1.5 + 3*floor(CE$latmin/3),1.5+3*floor(CE$lonmin/3), sep = "_"))
+  CE$latlon1 <- as.factor(paste(sg*0.5 + CE$latin,0.5+CE$lonmin, sep = "_"))
+  CE$latlon2 <- as.factor(paste(sg*1   + 2*floor(CE$latin/2),1+2*floor(CE$lonmin/2), sep = "_"))
+  CE$latlon3 <- as.factor(paste(sg*1.5 + 3*floor(CE$latin/3),1.5+3*floor(CE$lonmin/3), sep = "_"))
+
+  CE <- setup_IO_regions(CE, regY2=TRUE, regB3 = TRUE)
+  return(CE)
+  }
+
+plot_patterns <- function(llmn, sp, spreg) {
+  lab1 <- unlist(sapply(names(llmn),strsplit,"_"))
+  nlats <- length(lab1)/3
+  lats <- as.numeric(lab1[3 * seq(1:nlats) - 1])
+  lons <- as.numeric(lab1[3 * seq(1:nlats)])
+  pl <- tapply(llmn,list(lats,lons),mean)
+  windows(width = 12, height = 8)
+  latseq <- as.numeric(rownames(pl))
+  lonseq <- as.numeric(colnames(pl))
+  if(sp == "BET") image(lonseq,latseq,t(pl),xlab="Longitude",ylab="Latitude",main=sp, ylim = c(-42, 25), xlim = c(18, 130))
+  if(sp == "YFT") image(lonseq,latseq,t(pl),xlab="Longitude",ylab="Latitude",main=sp, ylim = c(-42, 25), xlim = c(18, 130))
+  contour(lonseq,latseq,t(pl),add = TRUE, labcex = 1)
+  plot_IO(plot_title = "", uselims = c(20, 130, -50, 25), sp = spreg, newm=F, lwdm=3, axes = F, tcol = 1, mapfill = TRUE)
+}
+
+mk_wts <- function(dat, wttype, catch = NULL, sp = NULL, cell_areas = NA) {
+  if (wttype == "equal")
+    wts <- NULL
+  if (wttype == "propn")
+    wts <- catch
+  # if (wttype == "area") {
+  #   a <- tapply(dat$latlong, list(dat$latlong, dat$yrqtr), length)
+  #   i <- match(dat$latlong, rownames(a))
+  #   j <- match(dat$yrqtr, colnames(a))
+  #   n <- mapply("[", list(a), i, j)
+  #   wts <- 1/n
+  # }
+  # if (wttype == "cell_area") {
+  #   areas <- cell_areas$garea[match(dat$latlong, cell_areas$latlong)]
+  #   a <- tapply(dat$latlong, list(dat$latlong, dat$yrqtr), length)
+  #   i <- match(dat$latlong, rownames(a))
+  #   j <- match(dat$yrqtr, colnames(a))
+  #   n <- mapply("[", list(a), i, j)
+  #   wts <- areas/n
+  # }
+  if (wttype == "area") {
+    a <- aggregate(dat$latlong, list(dat$latlong, dat$yrqtr), length)
+    i <- match(paste(dat$latlong, dat$yrqtr), paste(a[,1], a[,2]))
+    n <- a[i,3]
+    wts <- 1/n
+  }
+  if (wttype == "cell_area") {
+    areas <- cell_areas$garea[match(dat$latlong, cell_areas$latlong)]
+    a <- aggregate(dat$latlong, list(dat$latlong, dat$yrqtr), length)
+    i <- match(paste(dat$latlong, dat$yrqtr), paste(a[,1], a[,2]))
+    n <- a[i,3]
+    wts <- areas/n
+  }
+  if (wttype == "catch") {
+    if (is.null(catch))
+      catch <- tapply(dat[, sp], list(dat$latlong), sum)
+    a <- tapply(dat$latlong, list(dat$latlong, dat$yrqtr), length)
+    i <- match(dat$latlong, rownames(a))
+    j <- match(dat$yrqtr, colnames(a))
+    n <- mapply("[", list(a), i, j)
+    cwts <- mapply("[", list(catch), i)/sum(catch)
+    wts <- cwts/n
+  }
+  return(wts)
+}
+
 windows(width=10, height = 10)
-plot_IO(plot_title = "", uselims = c(20, 130, -50, 25), sp = "YFT", newm=TRUE, lwdm=3, axes = T, tcol = 1, mapfill = TRUE, bgc = "lightgrey")
-savePlot("map_YFT_regions", type = "png")
+plot_IO(plot_title = "", uselims = c(20, 130, -50, 25), sp = "YFT2", newm=TRUE, lwdm=3, axes = T, tcol = 1, mapfill = TRUE, bgc = "lightgrey")
+savePlot("map_YFT_regions", type = "tiff")
+plot_IO(plot_title = "", uselims = c(20, 130, -50, 25), sp = "BET3", newm=TRUE, lwdm=3, axes = T, tcol = 1, mapfill = TRUE, bgc = "lightgrey")
+savePlot("map_BET_regions", type = "tiff")
 
 
 ## Set up data
@@ -88,46 +216,85 @@ str(lldat)
 
 # Data checking
 table(substring(lldat$Grid,1,1), lldat$Fleet)
-table(lldat$regA4, useNA = "always")
+table(lldat$regB3, useNA = "always")
+table(lldat$regY2, useNA = "always")
 
 table(lldat$Fleet)
+table(lldat$Fleet)
+table(lldat$regY2)
 table(lldat$lat5)
 table(lldat$MonthEnd - lldat$MonthStart)
 table(lldat$QualityCode)
-tapply(lldat$Effort, list(lldat$Fleet, lldat$Year), sum)
 
-length(unique(lldat$latlong[lldat$regA4 > 0])) # grid cells per regional structure
+length(unique(lldat$latlong[lldat$regB3 > 0])) # grid cells per regional structure
+length(unique(lldat$latlong[lldat$regY2 > 0]))
 
-a <- aggregate(cbind(Effort, ALB.NO) ~ latlong + regA4 + Year, sum, data = lldat)
-a <- a[a$regA4 != 0,]
-table(a$regA4)
+a <- aggregate(cbind(Effort, BET.NO, YFT.NO) ~ latlong + regB3 + Year, sum, data = lldat)
+a <- a[a$regB3 != 0,]
+a$regB3[a$regB3  ==  4] <- 3
+table(a$regB3)
 windows()
-aB <- with(a, tapply(Effort, list(Year, regA4), length))
-plot(as.numeric(rownames(aB)), aB[,1], type = "l", ylim = c(0, 40), xlim = c(1955, 2018),
-     xlab = "Year", ylab = "Number of 5 degree grid cells", main = "ALB")
+aB <- with(a, tapply(Effort, list(Year, regB3), length))
+plot(as.numeric(rownames(aB)), aB[,1], type = "l", ylim = c(0, 70), xlim = c(1955, 2018),
+     xlab = "Year", ylab = "Number of 5 degree grid cells", main = "BET")
 for(r in 2:4) lines(as.numeric(rownames(aB)), aB[,r], col = r)
-legend("topright", legend = c("Region 1", "Region 2", "Region 3", "Region 4"), lty = 1, col = c(4,1,2,3))
-savePlot("Albacore regA4 strata", type = "png")
-#savePlot("Albacore regA4 strata", type = "tiff")
+legend("topright", legend = c("Region 1N", "Region 1S", "Region 2", "Region 3"), lty = 1, col = c(4,1,2,3))
+savePlot("Bigeye regB3 strata", type = "png")
+savePlot("Bigeye regB3 strata", type = "tiff")
+
+a <- aggregate(cbind(Effort, BET.NO, YFT.NO) ~ latlong + regY2 + Year, sum, data = lldat)
+a <- a[a$regY2 != 0,]
+aY <- with(a, tapply(Effort, list(Year, regY2), length))
+windows()
+plot(as.numeric(rownames(aY)), aY[,1], type = "l", ylim = c(0, 55), xlim = c(1955, 2018),
+     xlab = "Year", ylab = "Number of 5 degree grid cells", main = "YFT")
+for(r in 2:7) lines(as.numeric(rownames(aY)), aY[,r], col = r)
+legend("topright", legend = c("Region 1", "Region 2N", "Region 2S", "Region 3", "Region 4",
+                              "Region 5", "Region 6"), lty = 1, col = c(1,7,2:6))
+savePlot("Yellowfin regY2 strata", type = "png")
+savePlot("Yellowfin regY2 strata", type = "tiff")
+
+windows()
+names(lldat)
+lldat$qtr <- lldat$yq - lldat$Year
+a <- aggregate(cbind(Effort, BET.NO, YFT.NO) ~ latlong + regY2 + qtr + Year, sum, data = lldat)
+a <- a[a$regY2 != 0,]
+windows(14, 12); par(mfrow = c(2,3))
+for(r in c(2,7,5,3,4)) {
+  aa <- a[a$regY2 == r,]
+  aY <- with(aa, tapply(Effort, list(Year, qtr), length))
+  plot(as.numeric(rownames(aY)), aY[,1], type = "l", ylim = c(0, 45), xlim = c(1955, 2018),
+       xlab = "Year", ylab = "Number of 5 degree grid cells", main = paste0("R", r))
+  for(q in 2:4) lines(as.numeric(rownames(aY)), aY[,q], col = q)
+  legend("topright", legend = c("Q 1", "Q 2", "Q 3", "Q 4"),lty = 1, col = c(1:4))
+}
+savePlot("Yellowfin strata by qtr and yr", type = "png")
+savePlot("Yellowfin strata by qtr and yr", type = "tiff")
+
 
 
 # starts here
 pds <- data.frame(st=c(1960, 1963, 1975, 1979, 1980), nd=c(1975, 1975, 1994, 1994, 2000))
 pdnm <- as.character(c(6075, 6375, 7594, 7994, 8000))
-allreg <- list(ALB = c(1,2,3,4,5))
+allreg <- list(YFT=c(1,2,3,4,5,6,7), BET = c(1,2,3,4,5))
 
 # select data
 allwts <- list()
-sp="ALB"; pd = 4
+sp="BET"; pd = 4
 
 for (pd in 1:5) {
-  for (sp in c("ALB")) {
+  for (sp in c("YFT", "BET")) {
     ll <- lldat[lldat$yq > pds[pd,"st"] & lldat$yq < pds[pd,"nd"],]
     doreg <- with(allreg, get(sp))
-    if (sp== "ALB") {
-      ll$sp <- ll$ALB.NO
-      spreg = "ALB4"
-      spreg2 <- "regA4"
+    if (sp == "YFT") {
+      ll$sp <- ll$YFT.NO
+      spreg = "YFT2"
+      spreg2 <- "regY2"
+    }
+    if (sp== "BET") {
+      ll$sp <- ll$BET.NO
+      spreg = "BET3"
+      spreg2 <- "regB3"
     }
     ll$reg <- ll[,spreg2]
     ddd <- ll[ll$reg %in% doreg,]
@@ -145,7 +312,7 @@ for (pd in 1:5) {
     table(ddd$sp > 0, useNA = "always")
 #    ddd <- ddd[!is.na(ddd$sp) & ddd$sp > 0,]
     mn <- 0.1 * mean(ddd$sp / ddd$Effort)
-    # Calculate statistical wts - by area. Weights are (cell area) / number of strata.
+    # Calulate stat wts - by area. Weights are (cell area) / number of strata.
     wts <- mk_wts(dat = ddd, wttype = "cell_area", cell_areas = cell_areas)
     ddd <- ddd[!is.na(wts) & wts > 0,]
     wts <- wts[!is.na(wts) & wts > 0]
@@ -198,7 +365,7 @@ for (pd in 1:5) {
 
     # include all llxx, plus all lat*lon interactions where lat5 < 0 and lon5 > 40 & lon5 < 100
     newdat7 <- expand.grid(lat5 = sort(unique(ddd$lat5)), lon5 = sort(unique(ddd$lon5)), qtr = sort(unique(ddd$qtr)), yr = levels(ddd$yr), fl = levels(ddd$fl)[1])
-    newdat7 <- setup_IO_regions(newdat7, regY2=TRUE, regA4 = TRUE)
+    newdat7 <- setup_IO_regions(newdat7, regY2=TRUE, regB3 = TRUE)
     newdat7$reg <- newdat7[,spreg2]
     newdat7 <- newdat7[newdat7$reg %in% doreg,]
     newdat7$llxx <- paste(newdat7$reg, newdat7$lat5, newdat7$lon5, sep = "_")
@@ -274,25 +441,25 @@ for (pd in 1:5) {
 
     plot_patterns(mcalc1, sp, spreg)
     savePlot(paste0("relative wt_means_",pdnm[pd],sp),type = "png")
- #   savePlot(paste0("relative wt_means_",pdnm[pd],sp),type = "tiff")
+    savePlot(paste0("relative wt_means_",pdnm[pd],sp),type = "tiff")
     plot_patterns(llmn23, sp, spreg)
     savePlot(paste0("relative wt23_",pdnm[pd],sp),type = "png")
-#    savePlot(paste0("relative wt23_",pdnm[pd],sp),type = "tiff")
+    savePlot(paste0("relative wt23_",pdnm[pd],sp),type = "tiff")
     plot_patterns(llmn4, sp, spreg)
     savePlot(paste0("relative wt4_",pdnm[pd],sp),type = "png")
-#    savePlot(paste0("relative wt4_",pdnm[pd],sp),type = "tiff")
+    savePlot(paste0("relative wt4_",pdnm[pd],sp),type = "tiff")
     plot_patterns(llmn5, sp, spreg)
     savePlot(paste0("relative wt5_",pdnm[pd],sp),type = "png")
-#    savePlot(paste0("relative wt5_",pdnm[pd],sp),type = "tiff")
+    savePlot(paste0("relative wt5_",pdnm[pd],sp),type = "tiff")
     plot_patterns(llmn6, sp, spreg)
     savePlot(paste0("relative wt6_",pdnm[pd],sp),type = "png")
- #   savePlot(paste0("relative wt6_",pdnm[pd],sp),type = "tiff")
+    savePlot(paste0("relative wt6_",pdnm[pd],sp),type = "tiff")
     plot_patterns(llmn7, sp, spreg)
     savePlot(paste0("relative wt7_",pdnm[pd],sp),type = "png")
-#    savePlot(paste0("relative wt7_",pdnm[pd],sp),type = "tiff")
+    savePlot(paste0("relative wt7_",pdnm[pd],sp),type = "tiff")
     plot_patterns(llmn8, sp, spreg)
     savePlot(paste0("relative wt8_",pdnm[pd],sp),type = "png")
-#    savePlot(paste0("relative wt8_",pdnm[pd],sp),type = "tiff")
+    savePlot(paste0("relative wt8_",pdnm[pd],sp),type = "tiff")
     allwts[[paste0(spreg,"_", pdnm[pd],"_wts1")]] <- mwts/max(mwts)
     allwts[[paste0(spreg,"_", pdnm[pd],"_wts2")]] <- wts2
     allwts[[paste0(spreg,"_", pdnm[pd],"_wts3")]] <- wts3
@@ -314,7 +481,7 @@ for (pd in 1:5) {
     boxplot(model6$residuals ~ model6$data$Year, xlab = "Year")
     title(main = paste(sp, " ", pds[pd,"st"],"-", pds[pd,"nd"]), outer = "TRUE")
     savePlot(paste0("resids_by_reg_",pdnm[pd],sp),type = "png")
-#    savePlot(paste0("resids_by_reg_",pdnm[pd],sp),type = "tiff")
+    savePlot(paste0("resids_by_reg_",pdnm[pd],sp),type = "tiff")
 
     windows(height=15,width=8); par(mfrow=c(4,2), mar = c(4,4,3,1))
     plotdiags(model23$residuals, ti = paste(sp,"m2"))
@@ -322,7 +489,7 @@ for (pd in 1:5) {
     plotdiags(model5$residuals, ti = paste(sp,"m5"))
     plotdiags(model6$residuals, ti = paste(sp,"m6"))
     savePlot(paste0("resid_dbns_",pdnm[pd],sp),type = "png")
-#    savePlot(paste0("resid_dbns_",pdnm[pd],sp),type = "tiff")
+    savePlot(paste0("resid_dbns_",pdnm[pd],sp),type = "tiff")
 
     drop6 <- drop1(model6, test = "LRT")
     write.csv(drop6, paste0(sp,"drop6",pdnm[pd],sp,".csv"))
@@ -331,7 +498,7 @@ for (pd in 1:5) {
 
     graphics.off()
   }
-  # save(ALB_wts, ALB_wts_mean, file = paste0("ALB_wts_",pdnm[pd],".RData"))
+  # save(BET_wts, BET_wts_mean, file = paste0("BET_wts_",pdnm[pd],".RData"))
   # save(YFT_wts, YFT_wts_mean, file = paste0("YFT_wts_",pdnm[pd],".RData"))
 }
 save(allwts, file = paste0("allwts.RData"))
@@ -343,12 +510,17 @@ barplot(tapply(areax, regx, mean))
 barplot(tapply(llmn23[areax==0], regx[areax==0], mean))
 barplot(rbind(mwts,wts2,wts3,wts4,wts5,wts6), beside = T)
 
-posa <- grep("ALB4",names(allwts))
-allwtsa <- t(as.matrix(data.frame(allwts[posa])))
-write.csv(allwtsa, "allwt_alb.csv")
+posy <- grep("YFT2",names(allwts))
+posb <- grep("BET3",names(allwts))
+allwtsy <- t(as.matrix(data.frame(allwts[posy])))
+allwtsb <- t(as.matrix(data.frame(allwts[posb])))
+write.csv(allwtsy, "allwt_yft.csv")
+write.csv(allwtsb, "allwt_bet.csv")
 
-a5 <- rbind(cbind(tp=5, sp="ALB", read.csv(paste0("ALBdrop57994ALB.csv"))),
-            cbind(tp=6, sp="ALB", read.csv(paste0("ALBdrop67994ALB.csv"))[,1:4]))
+a5 <- rbind(cbind(tp=5, sp="BET", read.csv(paste0("BETdrop57994BET.csv"))),
+            cbind(tp=5, sp="YFT", read.csv(paste0("YFTdrop57994YFT.csv"))),
+            cbind(tp=6, sp="BET", read.csv(paste0("BETdrop67994BET.csv"))[,1:4]),
+            cbind(tp=6, sp="YFT", read.csv(paste0("YFTdrop67994YFT.csv"))[,1:4]))
 a <- a5 %>% group_by(sp, tp) %>%
       mutate(deltaAIC = AIC - min(AIC))
 write.csv(a, file = "table1.csv")
@@ -358,25 +530,44 @@ hist(summary(model6)$coefficients[,4])
 # predict relative catch rates for the same kind of effort for all quarters in 1990-2000
 # average the prediction across vessels. Choose an HBF or average across. Choose a time period. Sum across areas.
 str(lldat)
-table(lldat$regA4)
-reglist <- data.frame(index=1:4,regnumA=c(1:4), regA4=c(1,2,3,4))
+table(lldat$regB3)
+reglist <- data.frame(index=1:5,regnumY=1:5, regnumB=c(1:5), regY2=c("2S",3,4,5,"2N"),regB3=c("1S",2,3,4,"1N"))
 
 
 legtxt.pd <- c("1960-1975","1963-1975","1975-1994","1979-1994","1980-2000")
 windows()
-sp="ALB"
+sp="YFT"
 for (mdi in 1:8) {
-  for(spr in c("ALB4")) {
+  for(spr in c("YFT2")) {
     nmx <- paste0(paste(spr, pdnm, "wts", sep = "_"), mdi)
     a <- data.frame()
     for(i in 1:5) a <- rbind(a, with(allwts, get(nmx[i])))
-    colnames(a) <- 1:4
-    a <- a[,c(1,2,3,4)]
-    a <- a / apply(a,1,max)
-    colnames(a) <- paste0("R", c(1:4))
+    colnames(a) <- 1:7
+    a <- a[,c(1,7,2,3,4,5,6)]
+    colnames(a) <- paste0("R", c(1,"2N", "2S", 3,4,5,6))
     barplot(as.matrix(a), beside=TRUE, names.arg = colnames(a), legend = legtxt.pd, args.legend = list(x="topleft", adj = c(0,0.1)), main = paste("Model", mdi))
     savePlot(paste("barplot", sp, "wts_md", mdi, sep = "_"), type = "png")
-#    savePlot(paste("barplot", sp, "wts_md", mdi, sep = "_"), type = "tiff")
+    savePlot(paste("barplot", sp, "wts_md", mdi, sep = "_"), type = "tiff")
+  }
+}
+
+legtxt.pd <- c("1960-1975","1963-1975","1975-1994","1979-1994","1980-2000")
+windows()
+sp="BET"
+for (mdi in 1:8) {
+  for(spr in c("BET3")) {
+    nmx <- paste0(paste(spr, pdnm, "wts", sep = "_"), mdi)
+    a <- data.frame()
+    for(i in 1:5) a <- rbind(a, with(allwts, get(nmx[i])))
+    colnames(a) <- 1:5
+    a <- a[,c(5,1,2,3,4)]
+    sth <- apply(a[,4:5],1,sum)
+    a <- cbind(a[,1:3], sth)
+    a <- a / apply(a,1,max)
+    colnames(a) <- paste0("R", c("1N", "1S", 2,3))
+    barplot(as.matrix(a), beside=TRUE, names.arg = colnames(a), legend = legtxt.pd, args.legend = list(x="topleft", adj = c(0,0.1)), main = paste("Model", mdi))
+    savePlot(paste("barplot", sp, "wts_md", mdi, sep = "_"), type = "png")
+    savePlot(paste("barplot", sp, "wts_md", mdi, sep = "_"), type = "tiff")
   }
 }
 
@@ -388,35 +579,55 @@ for (mdi in 1:8) {
 # savePlot("barplot_YFT6_pds", type = "png")
 #
 # windows()
-# a<- with(allwts, rbind(ALB4_6075_wts6, ALB4_6375_wts6, ALB4_7594_wts6, ALB4_7994_wts6, ALB4_8000_wts6))
+# a<- with(allwts, rbind(BET3_6075_wts6, BET3_6375_wts6, BET3_7594_wts6, BET3_7994_wts6, BET3_8000_wts6))
 # a <- a[,c(5,1,2,3,4)]
 # sth <- apply(a[,4:5],1,sum)
 # a <- cbind(a[,1:3], sth)
 # a <- a / apply(a,1,max)
 # colnames(a) <- paste0("R", c("1N", "1S", 2,3))
 # barplot(a, beside=TRUE, names.arg = colnames(a), legend = c("1960-1975","1963-1975","1975-1994","1979-1994","1980-2000"), args.legend = list(x="topleft"))
-# savePlot("barplot_ALB6_pds", type = "png")
+# savePlot("barplot_BET6_pds", type = "png")
 
 legtxt <- c("m1 means","m2 stdized","m3 areas","m4 stat m","m5 fleet","m6 qtr","m7 gam", "m8 merged")
 
 windows()
-sp="ALB"
-for (pd in length(pdnm)) {
+sp="YFT"
+for (pd in 1:5) {
   pdx <- pdnm[pd]
-  for(spr in c("ALB4")) {
+  for(spr in c("YFT2")) {
     nmx <- paste0(paste(spr, pdx, "wts", sep = "_"), 1:8)
     a <- data.frame()
     for(i in 1:8) a <- rbind(a, with(allwts, get(nmx[i])))
-    colnames(a) <- 1:4
-    a <- a / apply(a,1,max)
-    colnames(a) <- paste0("R", 1:4)
+    colnames(a) <- 1:7
+    a <- a[,c(1,7,2,3,4,5,6)]
+    colnames(a) <- paste0("R", c(1,"2N", "2S", 3,4,5,6))
     barplot(as.matrix(a), beside=TRUE, names.arg = colnames(a), legend = legtxt, args.legend = list(x="topleft", y.intersp=0.8, adj=c(0,0.1)), main = paste(pds[pd, "st"], "-", pds[pd, "nd"]))
     savePlot(paste("barplot", sp, "wts", pdx, sep = "_"), type = "png")
-    #savePlot(paste("barplot", sp, "wts", pdx, sep = "_"), type = "tiff")
+    savePlot(paste("barplot", sp, "wts", pdx, sep = "_"), type = "tiff")
   }
 }
 
-##-----------------------------------------
+windows()
+sp="BET"
+for (pd in 1:5) {
+  pdx <- pdnm[pd]
+  for(spr in c("BET3")) {
+    nmx <- paste0(paste(spr, pdx, "wts", sep = "_"), 1:8)
+    a <- data.frame()
+    for(i in 1:8) a <- rbind(a, with(allwts, get(nmx[i])))
+    colnames(a) <- 1:5
+    a <- a[,c(5,1,2,3,4)]
+    sth <- apply(a[,4:5],1,sum)
+    a <- cbind(a[,1:3], sth)
+    a <- a / apply(a,1,max)
+    colnames(a) <- paste0("R", c("1N", "1S", 2,3))
+    barplot(as.matrix(a), beside=TRUE, names.arg = colnames(a), legend = legtxt, args.legend = list(x="topleft", y.intersp=0.8, adj=c(0,0.1)), main = paste(pds[pd, "st"], "-", pds[pd, "nd"]))
+    savePlot(paste("barplot", sp, "wts", pdx, sep = "_"), type = "png")
+    savePlot(paste("barplot", sp, "wts", pdx, sep = "_"), type = "tiff")
+  }
+}
+
+
 dowts <- function(d1, d2, wts, yq) {
   d1$pr <- d1$pr / mean(d1$pr[d1$yq %in% yq], na.rm = TRUE)
   d2$pr <- d2$pr / mean(d2$pr[d2$yq %in% yq], na.rm = TRUE)
@@ -425,17 +636,6 @@ dowts <- function(d1, d2, wts, yq) {
   plot(d1$yq,d1$pr,type="l",col=1, xlab = "Year-quarter", ylab = "Relative CPUE")
   lines(d2$yq,d2$pr,col=2)
   lines(dd$yq,dd$pr,col=3)
-  return(dd)
-}
-
-dowts_y <- function(d1, d2, wts, yr) {
-  d1$pr <- d1$pr / mean(d1$pr[d1$yr %in% yr], na.rm = TRUE)
-  d2$pr <- d2$pr / mean(d2$pr[d2$yr %in% yr], na.rm = TRUE)
-  dd <- data.frame(yr=d1$yr,pr=d1$pr * wts[1] + d2$pr[match(d1$yr,d2$yr)] * wts[2])
-  dd$pr <- dd$pr/mean(dd$pr,na.rm=TRUE)
-  plot(d1$yr,d1$pr,type="l",col=1, xlab = "Year", ylab = "Relative CPUE")
-  lines(d2$yr,d2$pr,col=2)
-  lines(dd$yr,dd$pr,col=3)
   return(dd)
 }
 
@@ -472,11 +672,11 @@ dowts_4 <- function(d1, d2, d3, d4, wts, yq) {
   d4$pr <- d4$pr / mean(d4$pr[d4$yq %in% yq], na.rm = TRUE)
   dd <- data.frame(yq=d1$yq,pr=d1$pr * wts[1] + d2$pr[match(d1$yq,d2$yq)] * wts[2] + d3$pr[match(d1$yq,d3$yq)] * wts[3] + d4$pr[match(d1$yq,d4$yq)] * wts[4])
   dd$pr <- dd$pr/mean(dd$pr,na.rm=TRUE)
-  plot(d1$yq,d1$pr,type="l",col=2, xlab = "Year-quarter", ylab = "Relative CPUE")
-  lines(d2$yq,d2$pr,col=3)
-  lines(d3$yq,d3$pr,col=4)
-  lines(d4$yq,d4$pr,col=5)
-  lines(dd$yq,dd$pr,col=1, lwd=2, type = "b")
+  plot(d1$yq,d1$pr,type="l",col=1, xlab = "Year-quarter", ylab = "Relative CPUE")
+  lines(d2$yq,d2$pr,col=2)
+  lines(d3$yq,d3$pr,col=3)
+  lines(d4$yq,d4$pr,col=3)
+  lines(dd$yq,dd$pr,col=4)
   return(dd)
 }
 
@@ -487,11 +687,11 @@ dowts_4y <- function(d1, d2, d3, d4, wts, yrs) {
   d4$pr <- d4$pr / mean(d4$pr[d4$yr %in% yrs], na.rm = TRUE)
   dd <- data.frame(yr=d1$yr,pr=d1$pr * wts[1] + d2$pr[match(d1$yr,d2$yr)] * wts[2] + d3$pr[match(d1$yr,d3$yr)] * wts[3] + d4$pr[match(d1$yr,d4$yr)] * wts[4])
   dd$pr <- dd$pr/mean(dd$pr,na.rm=TRUE)
-  plot(d1$yr,d1$pr,type="l",col=2, xlab = "Year-quarter", ylab = "Relative CPUE")
-  lines(d2$yr,d2$pr,col=3)
-  lines(d3$yr,d3$pr,col=4)
-  lines(d4$yr,d4$pr,col=5)
-  lines(dd$yr,dd$pr,col=1, lwd = 2, type = "b")
+  plot(d1$yr,d1$pr,type="l",col=1, xlab = "Year-quarter", ylab = "Relative CPUE")
+  lines(d2$yr,d2$pr,col=2)
+  lines(d3$yr,d3$pr,col=3)
+  lines(d4$yr,d4$pr,col=3)
+  lines(dd$yr,dd$pr,col=4)
   return(dd)
 }
 
@@ -529,122 +729,152 @@ dowts_5y <- function(d1, d2, d3, d4, d5, wts, yrs) {
   return(dd)
 }
 
-#############-----------
-#basedir <- "~/../OneDrive/"
-projdir <- "~/IOTC/2019_CPUE_ALB/"
-#Rdir <- paste0(projdir, "Rfiles/")
-jpdir <- paste0(projdir, "JP/")
-krdir <- paste0(projdir, "KR/")
-sydir <- paste0(projdir, "SY/")
-twdir <- paste0(projdir, "TW/")
-jointdir <- paste0(projdir, "joint/")
-jntalysis_dir <- paste0(jointdir, "analyses/")
+
+# Combine indices 2017
+yq <- seq(1980.125, 1999.875, .25)
+yq6075 <- seq(1963.125, 1975.875, .25)
+bet1 <- read.csv(paste0(jntalysis_dir17,"std_nocl_hbf/outputs/Joint_regB2_R1_dellog_boat_allyrs.csv"))
+bet2 <- read.csv(paste0(jntalysis_dir17,"std_nocl_hbf/outputs/Joint_regB2_R2_dellog_boat_allyrs.csv"))
+bet1n <- read.csv(paste0(jntalysis_dir17,"std_nocl_hbf_spl/outputs/Joint_regB3_R5_dellog_boat_allyrs.csv"))
+bet1s <- read.csv(paste0(jntalysis_dir17,"std_nocl_hbf_spl/outputs/Joint_regB3_R1_dellog_boat_allyrs.csv"))
+betnovess1 <- read.csv(paste0(jntalysis_dir17,"std_nocl_hbf/outputs/Joint_regB2_R1_dellog_novess_allyrs.csv"))
+betnovess1n <- read.csv(paste0(jntalysis_dir17,"std_nocl_hbf_spl/outputs/Joint_regB3_R5_dellog_novess_allyrs.csv"))
+betnovess1s <- read.csv(paste0(jntalysis_dir17,"std_nocl_hbf_spl/outputs/Joint_regB3_R1_dellog_novess_allyrs.csv"))
+betnovess2 <- read.csv(paste0(jntalysis_dir17,"std_nocl_hbf/outputs/Joint_regB2_R2_dellog_novess_allyrs.csv"))
+bet5279_1 <- read.csv(paste0(jntalysis_dir17,"std_nocl_hbf/outputs/Joint_regB2_R1_dellog_novess_5279.csv"))
+bet5279_1n <- read.csv(paste0(jntalysis_dir17,"std_nocl_hbf_spl/outputs/Joint_regB3_R5_dellog_novess_5279.csv"))
+bet5279_1s <- read.csv(paste0(jntalysis_dir17,"std_nocl_hbf_spl/outputs/Joint_regB3_R1_dellog_novess_5279.csv"))
+bet5279_2 <- read.csv(paste0(jntalysis_dir17,"std_nocl_hbf/outputs/Joint_regB2_R2_dellog_novess_5279.csv"))
+bet79nd_1 <- read.csv(paste0(jntalysis_dir17,"std_nocl_hbf/outputs/Joint_regB2_R1_dellog_vessid_79nd.csv"))
+bet79nd_1n <- read.csv(paste0(jntalysis_dir17,"std_nocl_hbf_spl/outputs/Joint_regB3_R5_dellog_vessid_79nd.csv"))
+bet79nd_1s <- read.csv(paste0(jntalysis_dir17,"std_nocl_hbf_spl/outputs/Joint_regB3_R1_dellog_vessid_79nd.csv"))
+bet79nd_2 <- read.csv(paste0(jntalysis_dir17,"std_nocl_hbf/outputs/Joint_regB2_R2_dellog_vessid_79nd.csv"))
+
+
+wts2 <- allwts$BET3_8000_wts6[c(5,1,2) + 1]
+wts2_early <- allwts$BET3_6375_wts6[c(5,1,2) + 1]
+windows(12,12); par(mfrow = c(2,2))
+dd <- dowts_3(bet1n, bet1s, bet2, wts2, yq)
+write.csv(dd,"Joint_regB3_R12_dellog_boat_allyrs.csv")
+dd <- dowts_3(betnovess1n, betnovess1s, betnovess2, wts2, yq)
+write.csv(dd,"Joint_regB3_R12_dellog_novess_allyrs.csv")
+dd <- dowts_3(bet5279_1n, bet5279_1s, bet5279_2, wts2_early, yq = yq6075)
+write.csv(dd,"Joint_regB3_R12_dellog_novess_5279.csv")
+dd <- dowts_3(bet79nd_1n, bet79nd_1s, bet79nd_2, wts2, yq)
+write.csv(dd,"Joint_regB3_R12_dellog_vessid_79nd.csv")
+savePlot("Joint_regB3_R12_dellog", type = "png")
+
+yrs <- seq(1980, 1999, 1)
+yrs6375 <- seq(1963, 1975, 1)
+bet1y <- read.csv(paste0(jntalysis_dir17,"std_nocl_hbf/outputs/Joint_regB2_R1_dellog_boat_allyrsyr.csv"))
+bet2y <- read.csv(paste0(jntalysis_dir17,"std_nocl_hbf/outputs/Joint_regB2_R2_dellog_boat_allyrsyr.csv"))
+bet1ny <- read.csv(paste0(jntalysis_dir17,"std_nocl_hbf_spl/outputs/Joint_regB3_R5_dellog_boat_allyrsyr.csv"))
+bet1sy <- read.csv(paste0(jntalysis_dir17,"std_nocl_hbf_spl/outputs/Joint_regB3_R1_dellog_boat_allyrsyr.csv"))
+betnovess1y <- read.csv(paste0(jntalysis_dir17,"std_nocl_hbf/outputs/Joint_regB2_R1_dellog_novess_allyrsyr.csv"))
+betnovess1ny <- read.csv(paste0(jntalysis_dir17,"std_nocl_hbf_spl/outputs/Joint_regB3_R5_dellog_novess_allyrsyr.csv"))
+betnovess1sy <- read.csv(paste0(jntalysis_dir17,"std_nocl_hbf_spl/outputs/Joint_regB3_R1_dellog_novess_allyrsyr.csv"))
+betnovess2y <- read.csv(paste0(jntalysis_dir17,"std_nocl_hbf/outputs/Joint_regB2_R2_dellog_novess_allyrsyr.csv"))
+bet5279_1y <- read.csv(paste0(jntalysis_dir17,"std_nocl_hbf/outputs/Joint_regB2_R1_dellog_novess_5279yr.csv"))
+bet5279_1ny <- read.csv(paste0(jntalysis_dir17,"std_nocl_hbf_spl/outputs/Joint_regB3_R5_dellog_novess_5279yr.csv"))
+bet5279_1sy <- read.csv(paste0(jntalysis_dir17,"std_nocl_hbf_spl/outputs/Joint_regB3_R1_dellog_novess_5279yr.csv"))
+bet5279_2y <- read.csv(paste0(jntalysis_dir17,"std_nocl_hbf/outputs/Joint_regB2_R2_dellog_novess_5279yr.csv"))
+bet79nd_1y <- read.csv(paste0(jntalysis_dir17,"std_nocl_hbf/outputs/Joint_regB2_R1_dellog_vessid_79ndyr.csv"))
+bet79nd_1ny <- read.csv(paste0(jntalysis_dir17,"std_nocl_hbf_spl/outputs/Joint_regB3_R5_dellog_vessid_79ndyr.csv"))
+bet79nd_1sy <- read.csv(paste0(jntalysis_dir17,"std_nocl_hbf_spl/outputs/Joint_regB3_R1_dellog_vessid_79ndyr.csv"))
+bet79nd_2y <- read.csv(paste0(jntalysis_dir17,"std_nocl_hbf/outputs/Joint_regB2_R2_dellog_vessid_79ndyr.csv"))
+wts6 <- allwts$BET3_8000_wts6[c(5,1,2) + 1]
+wts6_early <- allwts$BET3_6375_wts6[c(5,1,2) + 1]
+windows(12,12); par(mfrow = c(2,2))
+dd <- dowts_3y(bet1ny, bet1sy, bet2y, wts6, yrs)
+write.csv(dd,"Joint_regB3_R12_dellog_boat_allyrsyr.csv")
+dd <- dowts_3y(betnovess1ny, betnovess1sy, betnovess2y, wts6, yrs)
+write.csv(dd,"Joint_regB3_R12_dellog_novess_allyrsyr.csv")
+dd <- dowts_3y(bet5279_1ny, bet5279_1sy, bet5279_2y, wts6_early, yrs = yrs6375)
+write.csv(dd,"Joint_regB3_R12_dellog_novess_5279yr.csv")
+dd <- dowts_3y(bet79nd_1ny, bet79nd_1sy, bet79nd_2y, wts6, yrs)
+write.csv(dd,"Joint_regB3_R12_dellog_vessid_79ndyr.csv")
+savePlot("Joint_regB3_R12_dellogy", type = "png")
+
 
 # 2018
-# Combine indices alb
+# Combine indices yft
 yq <- seq(1979.125, 1993.875, .25)
 yq6075 <- seq(1963.125, 1974.875, .25)
-
-alb1 <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1_b/outputs/Joint_regA4_R1_dellog_boat_allyrs_yq.csv"))
-alb2 <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1_b/outputs/Joint_regA4_R2_dellog_boat_allyrs_yq.csv"))
-alb3 <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1_b/outputs/Joint_regA4_R3_dellog_boat_allyrs_yq.csv"))
-alb4 <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1_b/outputs/Joint_regA4_R4_dellog_boat_allyrs_yq.csv"))
-albnovess1 <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1_b/outputs/Joint_regA4_R1_dellog_novess_allyrs_yq.csv"))
-albnovess2 <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1_b/outputs/Joint_regA4_R2_dellog_novess_allyrs_yq.csv"))
-albnovess3 <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1_b/outputs/Joint_regA4_R3_dellog_novess_allyrs_yq.csv"))
-albnovess4 <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1_b/outputs/Joint_regA4_R4_dellog_novess_allyrs_yq.csv"))
-alb5279_1 <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1_b/outputs/Joint_regA4_R1_dellog_novess_5279_yq.csv"))
-alb5279_2 <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1_b/outputs/Joint_regA4_R2_dellog_novess_5279_yq.csv"))
-alb5279_3 <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1_b/outputs/Joint_regA4_R3_dellog_novess_5279_yq.csv"))
-alb5279_4 <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1_b/outputs/Joint_regA4_R4_dellog_novess_5279_yq.csv"))
-alb79nd_1 <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1_b/outputs/Joint_regA4_R1_dellog_vessid_79nd_yq.csv"))
-alb79nd_2 <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1_b/outputs/Joint_regA4_R2_dellog_vessid_79nd_yq.csv"))
-alb79nd_3 <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1_b/outputs/Joint_regA4_R3_dellog_vessid_79nd_yq.csv"))
-alb79nd_4 <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1_b/outputs/Joint_regA4_R4_dellog_vessid_79nd_yq.csv"))
-load(file = paste0("~/../OneDrive/Consulting/IOTC/2018_CPUE/joint/regscale_alb/allwts.RData"))
-
-wts8 <- allwts$ALB4_7594_wts8[c(1,2,3,4)]
-wts8_early <- allwts$ALB4_6375_wts8[c(1,2,3,4)]
+yft5 <- read.csv(paste0(jntalysis_dir,"cl0_hb1_hk1/outputs/Joint_regY_R5_dellog_boat_allyrs_yq.csv"))
+yft2 <- read.csv(paste0(jntalysis_dir,"cl0_hb1_hk1/outputs/Joint_regY_R2_dellog_boat_allyrs_yq.csv"))
+yft3 <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1/outputs/Joint_regY_R3_dellog_boat_allyrs_yq.csv"))
+yft4 <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1/outputs/Joint_regY_R4_dellog_boat_allyrs_yq.csv"))
+yft2n <- read.csv(paste0(jntalysis_dir,"cl0_hb1_hk1/outputs/Joint_regY2_R7_dellog_boat_allyrs_yq.csv"))
+yft2s <- read.csv(paste0(jntalysis_dir,"cl0_hb1_hk1/outputs/Joint_regY2_R2_dellog_boat_allyrs_yq.csv"))
+yftnovess5 <- read.csv(paste0(jntalysis_dir,"cl0_hb1_hk1/outputs/Joint_regY_R5_dellog_novess_allyrs_yq.csv"))
+yftnovess2 <- read.csv(paste0(jntalysis_dir,"cl0_hb1_hk1/outputs/Joint_regY_R2_dellog_novess_allyrs_yq.csv"))
+yftnovess2n <- read.csv(paste0(jntalysis_dir,"cl0_hb1_hk1/outputs/Joint_regY2_R7_dellog_novess_allyrs_yq.csv"))
+yftnovess2s <- read.csv(paste0(jntalysis_dir,"cl0_hb1_hk1/outputs/Joint_regY2_R2_dellog_novess_allyrs_yq.csv"))
+yftnovess3 <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1/outputs/Joint_regY_R3_dellog_novess_allyrs_yq.csv"))
+yftnovess4 <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1/outputs/Joint_regY_R4_dellog_novess_allyrs_yq.csv"))
+yft5279_5 <- read.csv(paste0(jntalysis_dir,"cl0_hb1_hk1/outputs/Joint_regY_R5_dellog_novess_5279_yq.csv"))
+yft5279_2 <- read.csv(paste0(jntalysis_dir,"cl0_hb1_hk1/outputs/Joint_regY_R2_dellog_novess_5279_yq.csv"))
+yft5279_2n <- read.csv(paste0(jntalysis_dir,"cl0_hb1_hk1/outputs/Joint_regY2_R7_dellog_novess_5279_yq.csv"))
+yft5279_2s <- read.csv(paste0(jntalysis_dir,"cl0_hb1_hk1/outputs/Joint_regY2_R2_dellog_novess_5279_yq.csv"))
+yft5279_3 <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1/outputs/Joint_regY_R3_dellog_novess_5279_yq.csv"))
+yft5279_4 <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1/outputs/Joint_regY_R4_dellog_novess_5279_yq.csv"))
+yft79nd_5 <- read.csv(paste0(jntalysis_dir,"cl0_hb1_hk1/outputs/Joint_regY_R5_dellog_vessid_79nd_yq.csv"))
+yft79nd_2 <- read.csv(paste0(jntalysis_dir,"cl0_hb1_hk1/outputs/Joint_regY_R2_dellog_vessid_79nd_yq.csv"))
+yft79nd_2n <- read.csv(paste0(jntalysis_dir,"cl0_hb1_hk1/outputs/Joint_regY2_R7_dellog_vessid_79nd_yq.csv"))
+yft79nd_2s <- read.csv(paste0(jntalysis_dir,"cl0_hb1_hk1/outputs/Joint_regY2_R2_dellog_vessid_79nd_yq.csv"))
+yft79nd_3 <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1/outputs/Joint_regY_R3_dellog_vessid_79nd_yq.csv"))
+yft79nd_4 <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1/outputs/Joint_regY_R4_dellog_vessid_79nd_yq.csv"))
+wts8 <- allwts$YFT2_7594_wts8[c(7,2,3,4,5)]
+wts8_early <- allwts$YFT2_6375_wts8[c(7,2,3,4,5)]
 windows(12,12); par(mfrow = c(2,2))
-dd <- dowts_4(alb1, alb2, alb3, alb4, wts8, yq)
-title(main = "All years, no vessel id")
-write.csv(dd,"Joint_regA4_R1234_dellog_boat_allyrs_yq.csv")
-dd <- dowts_4(albnovess1, albnovess2, albnovess3, albnovess4, wts8, yq)
-title(main = "All years, vessel id")
-legend("topright", legend = c("R1","R2","R3","R4","Joint"), col = c(2,3,4,5,1), lwd = c(1,1,1,1,2))
-write.csv(dd,"Joint_regA4_R1234_dellog_novess_allyrs_yq.csv")
-dd <- dowts_4(alb5279_1, alb5279_2, alb5279_3, alb5279_4, wts8_early, yq = yq6075)
-title(main = "Early period, no vessel id")
-write.csv(dd,"Joint_regA4_R1234_dellog_novess_5279_yq.csv")
-dd <- dowts_4(alb79nd_1, alb79nd_2, alb79nd_3, alb79nd_4, wts8, yq)
-title(main = "Recent period, vessel id")
-write.csv(dd,"Joint_regA4_R1234_dellog_vessid_79nd_yq.csv")
-savePlot("Joint_regA4_R1234_dellog", type = "png")
-
-wts8 <- allwts$ALB4_7594_wts8[c(3,4)]
-wts8_early <- allwts$ALB4_6375_wts8[c(3,4)]
-windows(12,12); par(mfrow = c(2,2))
-dd <- dowts(alb3, alb4, wts8, yq)
-write.csv(dd,"Joint_regA4_R34_dellog_boat_allyrs_yq.csv")
-dd <- dowts(albnovess3, albnovess4, wts8, yq)
-write.csv(dd,"Joint_regA4_R34_dellog_novess_allyrs_yq.csv")
-dd <- dowts(alb5279_3, alb5279_4, wts8_early, yq = yq6075)
-write.csv(dd,"Joint_regA4_R34_dellog_novess_5279_yq.csv")
-dd <- dowts(alb79nd_3, alb79nd_4, wts8, yq)
-write.csv(dd,"Joint_regA4_R34_dellog_vessid_79nd_yq.csv")
-savePlot("Joint_regA4_R34_dellog", type = "png")
+dd <- dowts_5(yft2n, yft2s, yft3, yft4, yft5, wts8, yq)
+write.csv(dd,"Joint_regY2_R2345_dellog_boat_allyrs_yq.csv")
+dd <- dowts_5(yftnovess2n, yftnovess2s, yftnovess3, yftnovess4, yftnovess5, wts8, yq)
+write.csv(dd,"Joint_regY2_R2345_dellog_novess_allyrs_yq.csv")
+dd <- dowts_5(yft5279_2n, yft5279_2s, yft5279_3, yft5279_4, yft5279_5, wts8_early, yq = yq6075)
+write.csv(dd,"Joint_regY2_R2345_dellog_novess_5279_yq.csv")
+dd <- dowts_5(yft79nd_2n, yft79nd_2s, yft79nd_3, yft79nd_4, yft79nd_5, wts8, yq)
+write.csv(dd,"Joint_regY2_R2345_dellog_vessid_79nd_yq.csv")
+savePlot("Joint_regY2_R2345_dellog", type = "png")
 
 yrs <- seq(1975, 1993, 1)
 yrs6375 <- seq(1963, 1974, 1)
-alb1y <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1_b/outputs/Joint_regA4_R1_dellog_boat_allyrs_yr.csv"))
-alb2y <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1_b/outputs/Joint_regA4_R2_dellog_boat_allyrs_yr.csv"))
-alb3y <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1_b/outputs/Joint_regA4_R3_dellog_boat_allyrs_yr.csv"))
-alb4y <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1_b/outputs/Joint_regA4_R4_dellog_boat_allyrs_yr.csv"))
-albnovess1y <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1_b/outputs/Joint_regA4_R1_dellog_novess_allyrs_yr.csv"))
-albnovess2y <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1_b/outputs/Joint_regA4_R2_dellog_novess_allyrs_yr.csv"))
-albnovess3y <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1_b/outputs/Joint_regA4_R3_dellog_novess_allyrs_yr.csv"))
-albnovess4y <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1_b/outputs/Joint_regA4_R4_dellog_novess_allyrs_yr.csv"))
-alb5279_1y <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1_b/outputs/Joint_regA4_R1_dellog_novess_5279_yr.csv"))
-alb5279_2y <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1_b/outputs/Joint_regA4_R2_dellog_novess_5279_yr.csv"))
-alb5279_3y <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1_b/outputs/Joint_regA4_R3_dellog_novess_5279_yr.csv"))
-alb5279_4y <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1_b/outputs/Joint_regA4_R4_dellog_novess_5279_yr.csv"))
-alb79nd_1y <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1_b/outputs/Joint_regA4_R1_dellog_vessid_79nd_yr.csv"))
-alb79nd_2y <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1_b/outputs/Joint_regA4_R2_dellog_vessid_79nd_yr.csv"))
-alb79nd_3y <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1_b/outputs/Joint_regA4_R3_dellog_vessid_79nd_yr.csv"))
-alb79nd_4y <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1_b/outputs/Joint_regA4_R4_dellog_vessid_79nd_yr.csv"))
-wts8 <- allwts$ALB4_7594_wts8[c(1,2,3,4)]
-wts8_early <- allwts$ALB4_6375_wts8[c(1,2,3,4)]
+yft5y <- read.csv(paste0(jntalysis_dir,"cl0_hb1_hk1/outputs/Joint_regY_R5_dellog_boat_allyrs_yr.csv"))
+yft2y <- read.csv(paste0(jntalysis_dir,"cl0_hb1_hk1/outputs/Joint_regY_R2_dellog_boat_allyrs_yr.csv"))
+yft3y <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1/outputs/Joint_regY_R3_dellog_boat_allyrs_yr.csv"))
+yft4y <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1/outputs/Joint_regY_R4_dellog_boat_allyrs_yr.csv"))
+yft2ny <- read.csv(paste0(jntalysis_dir,"cl0_hb1_hk1/outputs/Joint_regY2_R7_dellog_boat_allyrs_yr.csv"))
+yft2sy <- read.csv(paste0(jntalysis_dir,"cl0_hb1_hk1/outputs/Joint_regY2_R2_dellog_boat_allyrs_yr.csv"))
+yftnovess5y <- read.csv(paste0(jntalysis_dir,"cl0_hb1_hk1/outputs/Joint_regY_R5_dellog_novess_allyrs_yr.csv"))
+yftnovess2y <- read.csv(paste0(jntalysis_dir,"cl0_hb1_hk1/outputs/Joint_regY_R2_dellog_novess_allyrs_yr.csv"))
+yftnovess2ny <- read.csv(paste0(jntalysis_dir,"cl0_hb1_hk1/outputs/Joint_regY2_R7_dellog_novess_allyrs_yr.csv"))
+yftnovess2sy <- read.csv(paste0(jntalysis_dir,"cl0_hb1_hk1/outputs/Joint_regY2_R2_dellog_novess_allyrs_yr.csv"))
+yftnovess3y <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1/outputs/Joint_regY_R3_dellog_novess_allyrs_yr.csv"))
+yftnovess4y <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1/outputs/Joint_regY_R4_dellog_novess_allyrs_yr.csv"))
+yft5279_5y <- read.csv(paste0(jntalysis_dir,"cl0_hb1_hk1/outputs/Joint_regY_R5_dellog_novess_5279_yr.csv"))
+yft5279_2y <- read.csv(paste0(jntalysis_dir,"cl0_hb1_hk1/outputs/Joint_regY_R2_dellog_novess_5279_yr.csv"))
+yft5279_2ny <- read.csv(paste0(jntalysis_dir,"cl0_hb1_hk1/outputs/Joint_regY2_R7_dellog_novess_5279_yr.csv"))
+yft5279_2sy <- read.csv(paste0(jntalysis_dir,"cl0_hb1_hk1/outputs/Joint_regY2_R2_dellog_novess_5279_yr.csv"))
+yft5279_3y <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1/outputs/Joint_regY_R3_dellog_novess_5279_yr.csv"))
+yft5279_4y <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1/outputs/Joint_regY_R4_dellog_novess_5279_yr.csv"))
+yft79nd_5y <- read.csv(paste0(jntalysis_dir,"cl0_hb1_hk1/outputs/Joint_regY_R5_dellog_vessid_79nd_yr.csv"))
+yft79nd_2y <- read.csv(paste0(jntalysis_dir,"cl0_hb1_hk1/outputs/Joint_regY_R2_dellog_vessid_79nd_yr.csv"))
+yft79nd_2ny <- read.csv(paste0(jntalysis_dir,"cl0_hb1_hk1/outputs/Joint_regY2_R7_dellog_vessid_79nd_yr.csv"))
+yft79nd_2sy <- read.csv(paste0(jntalysis_dir,"cl0_hb1_hk1/outputs/Joint_regY2_R2_dellog_vessid_79nd_yr.csv"))
+yft79nd_3y <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1/outputs/Joint_regY_R3_dellog_vessid_79nd_yr.csv"))
+yft79nd_4y <- read.csv(paste0(jntalysis_dir,"cl1_hb0_hk1/outputs/Joint_regY_R4_dellog_vessid_79nd_yr.csv"))
+wts8 <- allwts$YFT2_7594_wts8[c(7,2,3,4,5)]
+wts8_early <- allwts$YFT2_6375_wts8[c(7,2,3,4,5)]
 windows(12,12); par(mfrow = c(2,2))
-dd <- dowts_4y(alb1y, alb2y, alb3y, alb4y, wts8, yrs)
-title(main = "All years, no vessel id")
-write.csv(dd,"Joint_regA4_R1234_dellog_boat_allyrs_yr.csv")
-dd <- dowts_4y(albnovess1y, albnovess2y, albnovess3y, albnovess4y, wts8, yrs)
-title(main = "All years, vessel id")
-legend("topright", legend = c("R1","R2","R3","R4","Joint"), col = c(2,3,4,5,1), lwd = c(1,1,1,1,2))
-write.csv(dd,"Joint_regA4_R1234_dellog_novess_allyrs_yr.csv")
-dd <- dowts_4y(alb5279_1y, alb5279_2y, alb5279_3y, alb5279_4y, wts8_early, yrs = yrs6375)
-title(main = "Early period, no vessel id")
-write.csv(dd,"Joint_regA4_R1234_dellog_novess_5279_yr.csv")
-dd <- dowts_4y(alb79nd_1y, alb79nd_2y, alb79nd_3y, alb79nd_4y, wts8, yrs)
-title(main = "Recent period, vessel id")
-write.csv(dd,"Joint_regA4_R1234_dellog_vessid_79nd_yr.csv")
-savePlot("Joint_regA4_R1234_dellogyr", type = "png")
-
-wts8 <- allwts$ALB4_7594_wts8[c(3,4)]
-wts8_early <- allwts$ALB4_6375_wts8[c(3,4)]
-windows(12,12); par(mfrow = c(2,2))
-dd <- dowts_y(alb3y, alb4y, wts8, yrs)
-write.csv(dd,"Joint_regA4_R34_dellog_boat_allyrs_yr.csv")
-dd <- dowts_y(albnovess3y, albnovess4y, wts8, yrs)
-write.csv(dd,"Joint_regA4_R34_dellog_novess_allyrs_yr.csv")
-dd <- dowts_y(alb5279_3y, alb5279_4y, wts8_early, yr = yrs6375)
-write.csv(dd,"Joint_regA4_R34_dellog_novess_5279_yr.csv")
-dd <- dowts_y(alb79nd_3y, alb79nd_4y, wts8, yrs)
-write.csv(dd,"Joint_regA4_R34_dellog_vessid_79nd_yr.csv")
-savePlot("Joint_regA4_R34_dellogyr", type = "png")
-
-
-
+dd <- dowts_5y(yft2ny, yft2sy, yft3y, yft4y, yft5y, wts8, yrs)
+write.csv(dd,"Joint_regY2_R2345_dellog_boat_allyrs_yr.csv")
+dd <- dowts_5y(yftnovess2ny, yftnovess2sy, yftnovess3y, yftnovess4y, yftnovess5y, wts8, yrs)
+write.csv(dd,"Joint_regY2_R2345_dellog_novess_allyrs_yr.csv")
+dd <- dowts_5y(yft5279_2ny, yft5279_2sy, yft5279_3y, yft5279_4y, yft5279_5y, wts8_early, yrs = yrs6375)
+write.csv(dd,"Joint_regY2_R2345_dellog_novess_5279_yr.csv")
+dd <- dowts_5y(yft79nd_2ny, yft79nd_2sy, yft79nd_3y, yft79nd_4y, yft79nd_5y, wts8, yrs)
+write.csv(dd,"Joint_regY2_R2345_dellog_vessid_79nd_yr.csv")
+savePlot("Joint_regY2_R2345_dellogyr", type = "png")
 
 
 # Combine indices - an alternative approach for YFT
@@ -719,11 +949,11 @@ yrng8000 <- c(rng_mn(yft2n, yq8000),rng_mn(yft2s, yq8000),rng_mn(yft3, yq8000),r
 yrng6075; yrng6375; yrng7594; yrng7994; yrng8000
 
 # Make adjusted series
-# bet6075st <- dowts_list(dlist = betlist, wts = c(allwts$ALB4_6075_wts8[betlist_ord[1:3]], sum(allwts$ALB4_6075_wts8[betlist_ord[4:5]])), yq = yq)
-# bet6375st <- dowts_list(dlist = betlist, wts = c(allwts$ALB4_6375_wts8[betlist_ord[1:3]], sum(allwts$ALB4_6375_wts8[betlist_ord[4:5]])), yq = yq)
-# bet7594st <- dowts_list(dlist = betlist, wts = c(allwts$ALB4_7594_wts8[betlist_ord[1:3]], sum(allwts$ALB4_7594_wts8[betlist_ord[4:5]])), yq = yq)
-# bet7994st <- dowts_list(dlist = betlist, wts = c(allwts$ALB4_7994_wts8[betlist_ord[1:3]], sum(allwts$ALB4_7994_wts8[betlist_ord[4:5]])), yq = yq)
-# bet8000st <- dowts_list(dlist = betlist, wts = c(allwts$ALB4_8000_wts8[betlist_ord[1:3]], sum(allwts$ALB4_8000_wts8[betlist_ord[4:5]])), yq = yq)
+# bet6075st <- dowts_list(dlist = betlist, wts = c(allwts$BET3_6075_wts8[betlist_ord[1:3]], sum(allwts$BET3_6075_wts8[betlist_ord[4:5]])), yq = yq)
+# bet6375st <- dowts_list(dlist = betlist, wts = c(allwts$BET3_6375_wts8[betlist_ord[1:3]], sum(allwts$BET3_6375_wts8[betlist_ord[4:5]])), yq = yq)
+# bet7594st <- dowts_list(dlist = betlist, wts = c(allwts$BET3_7594_wts8[betlist_ord[1:3]], sum(allwts$BET3_7594_wts8[betlist_ord[4:5]])), yq = yq)
+# bet7994st <- dowts_list(dlist = betlist, wts = c(allwts$BET3_7994_wts8[betlist_ord[1:3]], sum(allwts$BET3_7994_wts8[betlist_ord[4:5]])), yq = yq)
+# bet8000st <- dowts_list(dlist = betlist, wts = c(allwts$BET3_8000_wts8[betlist_ord[1:3]], sum(allwts$BET3_8000_wts8[betlist_ord[4:5]])), yq = yq)
 
 yft6375st <- dowts_list(dlist = yftlist, wts = allwts$YFT2_6375_wts8[yftlist_ord], yq = yq6075)
 yft6075st <- dowts_list(dlist = yftlist, wts = allwts$YFT2_6075_wts8[yftlist_ord], yq = yq6075)
@@ -748,7 +978,7 @@ for (wt in 1:6) {
   barplot(a, beside = TRUE, names.arg = colnames(a), legend = c("1960-1975","1963-1975","1975-1994","1979-1994","1980-2000"), args.legend = list(x = "topleft"), main = paste0("YFT m", wt))
   savePlot(paste0("barplot_YFTadj_pds_wts", wt), type = "png")
 
-  a<- with(allwts, rbind(get(mkwt("ALB4_6075", wt)),get(mkwt("ALB4_6375", wt)),get(mkwt("ALB4_8000", wt))))
+  a<- with(allwts, rbind(get(mkwt("BET3_6075", wt)),get(mkwt("BET3_6375", wt)),get(mkwt("BET3_8000", wt))))
   a <- a[,betlist_ord]
   sth <- apply(a[,4:5],1,sum)
   a <- cbind(a[,1:3], sth)
@@ -758,8 +988,8 @@ for (wt in 1:6) {
   a <- a / apply(a,1,max)
   colnames(a) <- paste0("R", c("1N", "1S", 2,3))
   windows()
-  barplot(a, beside = TRUE, names.arg = colnames(a), legend = c("1960-1975","1963-1975","1975-1994","1979-1994","1980-2000"), args.legend = list(x = "topleft"), main = paste0("ALB m", wt))
-  savePlot(paste0("barplot_ALBadj_pds_wts", wt), type = "png")
+  barplot(a, beside = TRUE, names.arg = colnames(a), legend = c("1960-1975","1963-1975","1975-1994","1979-1994","1980-2000"), args.legend = list(x = "topleft"), main = paste0("BET m", wt))
+  savePlot(paste0("barplot_BETadj_pds_wts", wt), type = "png")
 }
 
 
@@ -770,13 +1000,13 @@ for(i in 1:5) {
 }
 
 
-dd <- dowts(bet1, bet2, ALB_wts[-1], yq)
+dd <- dowts(bet1, bet2, BET_wts[-1], yq)
 write.csv(dd,"Joint_regB2_R12_dellog_boat_allyrs.csv")
-dd <- dowts(betnovess1, betnovess2, ALB_wts[-1], yq)
+dd <- dowts(betnovess1, betnovess2, BET_wts[-1], yq)
 write.csv(dd,"Joint_regB2_R12_dellog_novess_allyrs.csv")
-dd <- dowts(bet5279_1, bet5279_2, ALB_wts[-1], yq = yqfake)
+dd <- dowts(bet5279_1, bet5279_2, BET_wts[-1], yq = yqfake)
 write.csv(dd,"Joint_regB2_R12_dellog_novess_5279.csv")
-dd <- dowts(bet79nd_1, bet79nd_2, ALB_wts[-1], yq)
+dd <- dowts(bet79nd_1, bet79nd_2, BET_wts[-1], yq)
 write.csv(dd,"Joint_regB2_R12_dellog_vessid_79nd.csv")
 savePlot("Joint_regB2_R12_dellog", type = "png")
 
@@ -808,34 +1038,34 @@ barplot(a, beside=TRUE, names.arg = colnames(a), legend.text = legtxt, args.lege
 savePlot("barplotadj_YFT_wts_8000", type = "png")
 
 windows()
-a<- with(allwts, rbind(ALB4_6075_wts1,ALB4_6075_wts2,ALB4_6075_wts3,ALB4_6075_wts4,ALB4_6075_wts5,ALB4_6075_wts8))
+a<- with(allwts, rbind(BET3_6075_wts1,BET3_6075_wts2,BET3_6075_wts3,BET3_6075_wts4,BET3_6075_wts5,BET3_6075_wts8))
 a <- a[,c(6,2,3,4,5)-1]
 sth <- apply(a[,4:5],1,sum)
 a <- cbind(a[,1:3], sth)
 a <- t(t(a) / brng6075)
 a <- a / apply(a,1,max)
 colnames(a) <- paste0("R", c("1N", "1S", 2,3))
-barplot(a, beside=TRUE, names.arg = colnames(a), legend = legtxt, args.legend = list(x="topleft"), main = "ALB 1960 - 1975")
-savePlot("barplotadj_ALB_means_6075", type = "png")
+barplot(a, beside=TRUE, names.arg = colnames(a), legend = legtxt, args.legend = list(x="topleft"), main = "BET 1960 - 1975")
+savePlot("barplotadj_BET_means_6075", type = "png")
 
 windows()
-a<- with(allwts, rbind(ALB4_6375_wts1,ALB4_6375_wts2,ALB4_6375_wts3,ALB4_6375_wts4,ALB4_6375_wts5,ALB4_6375_wts8))
+a<- with(allwts, rbind(BET3_6375_wts1,BET3_6375_wts2,BET3_6375_wts3,BET3_6375_wts4,BET3_6375_wts5,BET3_6375_wts8))
 a <- a[,c(6,2,3,4,5)]
 sth <- apply(a[,4:5],1,sum)
 a <- cbind(a[,1:3], sth)
 a <- t(t(a) / brng6375)
 a <- a / apply(a,1,max)
 colnames(a) <- paste0("R", c("1N", "1S", 2,3))
-barplot(a, beside=TRUE, names.arg = colnames(a), legend = legtxt, args.legend = list(x="topleft"), main = "ALB 1963 - 1975")
-savePlot("barplotadj_ALB_means_6375", type = "png")
+barplot(a, beside=TRUE, names.arg = colnames(a), legend = legtxt, args.legend = list(x="topleft"), main = "BET 1963 - 1975")
+savePlot("barplotadj_BET_means_6375", type = "png")
 
 windows()
-a<- with(allwts, rbind(ALB4_8000_wts1,ALB4_8000_wts2,ALB4_8000_wts3,ALB4_8000_wts4,ALB4_8000_wts5,ALB4_8000_wts8))
+a<- with(allwts, rbind(BET3_8000_wts1,BET3_8000_wts2,BET3_8000_wts3,BET3_8000_wts4,BET3_8000_wts5,BET3_8000_wts8))
 a <- a[,c(6,2,3,4,5)]
 sth <- apply(a[,4:5],1,sum)
 a <- cbind(a[,1:3], sth)
 a <- t(t(a) / brng8000)
 a <- a / apply(a,1,max)
 colnames(a) <- paste0("R", c("1N", "1S", 2,3))
-barplot(a, beside=TRUE, names.arg = colnames(a), legend = legtxt, args.legend = list(x="topleft"), main = "ALB 1980 - 2000")
-savePlot("barplotadj_ALB_means_8000", type = "png")
+barplot(a, beside=TRUE, names.arg = colnames(a), legend = legtxt, args.legend = list(x="topleft"), main = "BET 1980 - 2000")
+savePlot("barplotadj_BET_means_8000", type = "png")
