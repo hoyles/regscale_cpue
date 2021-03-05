@@ -1,5 +1,9 @@
-# Regional weighting
-########################################################
+############################################################################
+# Code to estimate regional scaling factors. 
+# Developed by Simon Hoyle, based on Adam Langley's original code & concept
+# This version made available March 2021
+# https://github.com/hoyles/regscale_cpue
+############################################################################
 
 library(mgcv)
 library(here)
@@ -25,18 +29,17 @@ savePlot("map_BET_regions", type = "png")
 ## Set up data
 cefile <- "IOTC-2020-WPTT22-DATA04-CELongline.zip" # The IOTC 2020 data file. Data for the scaling period is unlikely to change. 
 lldat <- read.csv(unzip(cefile),stringsAsFactors=F)
-lldat <- prepCE(lldat)
+lldat <- prepCE(lldat)  # Data preparation code in source_functions.r
 lldat <- lldat[substring(lldat$Fleet,1,3) %in% c("JPN","KOR"),]
-str(lldat)
 load(file=paste0(repodir,"cell_areas.RData"))
 
 
 # Data checking
+str(lldat) 
 table(substring(lldat$Grid,1,1), lldat$Fleet) # make sure it's getting data
 table(lldat$regB3, useNA = "always") 
 table(lldat$regY2, useNA = "always")
 table(lldat$lat5)
-
 length(unique(lldat$latlong[lldat$regB3 > 0])) # grid cells per regional structure
 length(unique(lldat$latlong[lldat$regY2 > 0]))
 
@@ -81,7 +84,7 @@ for(r in c(2,7,5,3,4)) {
 }
 savePlot("Yellowfin cells by qtr and yr", type = "png")
 
-# Figure showing number of 5 degree grid cells per region and qtr - YFT
+# Figure showing number of 5 degree strata per region and qtr - YFT
 a <- aggregate(cbind(Effort, BET.NO, YFT.NO) ~ latlong + regY2 + qtr + MonthStart + Year, sum, data = lldat)
 a <- a[a$regY2 != 0,]
 windows(14, 12); par(mfrow = c(2,3))
@@ -96,7 +99,7 @@ for(r in c(2,7,5,3,4)) {
 savePlot("Yellowfin strata by qtr and yr", type = "png")
 
 
-# starts here
+# Scaling analysis starts here
 pds <- data.frame(st=c(1960, 1963, 1975, 1979, 1980), nd=c(1975, 1975, 1994, 1994, 2000)) # choose options for scaling periods
 pdnm <- as.character(c(6075, 6375, 7594, 7994, 8000)) # name the alternative scaling periods
 allreg <- list(YFT=c(1,2,3,4,5,6,7), BET = c(1,2,3,4,5)) # regions to include
@@ -133,21 +136,22 @@ for (pd in 1:5) {
     ##small number of zero catch records
     ddd$sp[is.na(ddd$sp)] <- 0
     table(ddd$sp > 0, useNA = "always")
-#    ddd <- ddd[!is.na(ddd$sp) & ddd$sp > 0,]
     mn <- 0.1 * mean(ddd$sp / ddd$Effort)
-    # Calulate stat wts - by area. Weights are (cell area) / number of strata.
+    # Calulate statistical wts - by area. Weights are (cell area) / number of strata.
     wts <- mk_wts(dat = ddd, wttype = "cell_area", cell_areas = cell_areas)
     ddd <- ddd[!is.na(wts) & wts > 0,]
     wts <- wts[!is.na(wts) & wts > 0]
     wts <- wts / mean(wts, na.rm = TRUE)
 
-    # Model
+    # Set up variables as factors
     ddd$yrqtr <- factor(ddd$yrqtr)
     ddd$llxx <- factor(ddd$llxx)
     ddd$fl <- factor(ddd$Fleet)
     ddd$yr <- as.factor(ddd$Year)
     ddd$qtr <- ddd$yq - ddd$Year
     ddd$reg_qtr <- factor(paste(ddd$reg, ddd$qtr, sep = "_"))
+
+    # Standardization models that estimate the relative cell contributions to CPUE
     model23 <- glm(log(sp/Effort + mn) ~ yrqtr + llxx, data = ddd)
     model4 <- glm(log(sp/Effort + mn) ~ yrqtr + llxx, data = ddd, weights = wts) # add statistical weights
     if (length(unique(ddd$fl)) > 1) {
@@ -181,7 +185,7 @@ for (pd in 1:5) {
     newdat6 <- expand.grid(llxx = levels(ddd$llxx), qtr = sort(unique(ddd$qtr)), yr = levels(ddd$yr), fl = levels(ddd$fl)[1])
     newdat6$reg <- substring(as.character(newdat6$llxx), 1, 1)
     newdat6$reg_qtr <- paste(newdat6$reg, newdat6$qtr, sep = "_")
-    newdat6 <- newdat6[newdat6$reg_qtr %in% unique(ddd$reg_qtr),]    # remove reg_qtr values that can't be predicted because no data were in the model
+    newdat6 <- newdat6[newdat6$reg_qtr %in% unique(ddd$reg_qtr),]  # remove reg_qtr values that can't be predicted because no data were in the model
     newdat6$cpue6 <- exp(predict.glm(model6, newdata = newdat6, type = "response")) - mn
     a <- substring(as.character(newdat6$llxx), 3)
     newdat6$area <- cell_areas[match(a, cell_areas$latlong), "areax"]
@@ -319,11 +323,13 @@ save(allwts, file = paste0("allwts.RData"))
 load(file = "allwts.RData")
 
 
+# check the results
 cbind(areax, regx)
-barplot(tapply(areax, regx, mean))
-barplot(tapply(llmn23[areax==0], regx[areax==0], mean))
+barplot(tapply(areax, regx, mean)) # average sizes of the cells in each region
+barplot(tapply(llmn23, regx, mean))
 barplot(rbind(mwts,wts2,wts3,wts4,wts5,wts6), beside = T)
 
+# Save the results
 posy <- grep("YFT2",names(allwts))
 posb <- grep("BET3",names(allwts))
 allwtsy <- t(as.matrix(data.frame(allwts[posy])))
@@ -340,7 +346,6 @@ a <- a5 %>% group_by(sp, tp) %>%
 write.csv(a, file = "table1.csv")
 
 
-hist(summary(model6)$coefficients[,4])
 # predict relative catch rates for the same kind of effort for all quarters in 1990-2000
 # average the prediction across vessels. Choose an HBF or average across. Choose a time period. Sum across areas.
 str(lldat)
@@ -348,6 +353,7 @@ table(lldat$regB3)
 reglist <- data.frame(index=1:5,regnumY=1:5, regnumB=c(1:5), regY2=c("2S",3,4,5,"2N"),regB3=c("1S",2,3,4,"1N"))
 
 
+# Plots to compare the various time periods and models, by species
 legtxt.pd <- c("1960-1975","1963-1975","1975-1994","1979-1994","1980-2000")
 windows()
 sp="YFT"
@@ -383,22 +389,6 @@ for (mdi in 1:8) {
   }
 }
 
-# windows()
-# a<- with(allwts, rbind(YFT2_6075_wts6, YFT2_6375_wts6, YFT2_7594_wts6, YFT2_7994_wts6, YFT2_8000_wts6))
-# a <- a[,c(1,7,2,3,4,5,6)]
-# colnames(a) <- paste0("R", c(1,"2N", "2S", 3,4,5,6))
-# barplot(a, beside=TRUE, names.arg = colnames(a), legend = c("1960-1975","1963-1975","1975-1994","1979-1994","1980-2000"), args.legend = list(x="topleft"))
-# savePlot("barplot_YFT6_pds", type = "png")
-#
-# windows()
-# a<- with(allwts, rbind(BET3_6075_wts6, BET3_6375_wts6, BET3_7594_wts6, BET3_7994_wts6, BET3_8000_wts6))
-# a <- a[,c(5,1,2,3,4)]
-# sth <- apply(a[,4:5],1,sum)
-# a <- cbind(a[,1:3], sth)
-# a <- a / apply(a,1,max)
-# colnames(a) <- paste0("R", c("1N", "1S", 2,3))
-# barplot(a, beside=TRUE, names.arg = colnames(a), legend = c("1960-1975","1963-1975","1975-1994","1979-1994","1980-2000"), args.legend = list(x="topleft"))
-# savePlot("barplot_BET6_pds", type = "png")
 
 legtxt <- c("m1 means","m2 stdized","m3 areas","m4 stat m","m5 fleet","m6 qtr","m7 gam", "m8 merged")
 
