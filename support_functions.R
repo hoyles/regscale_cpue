@@ -1,5 +1,9 @@
-# load aggregated data
-#lldat <- read.csv("IOTC-2016-DATASETS-CELongline.csv",stringsAsFactors = F)
+#' Prepare aggregated data
+#'
+#' Function to prepare a file of IOTC longline data for use, such as for regional scaling analyses.
+#' To set it up for different regions, change the regions parameters in the call to the setup_IO_regions function 
+#' @param CE The input data file.
+#'
 prepCE <- function(CE) {
   CE[1,]
   table(CE$MonthStart)
@@ -36,7 +40,13 @@ prepCE <- function(CE) {
   CE$latlon2 <- as.factor(paste(sg*1   + 2*floor(CE$latin/2),1+2*floor(CE$lonmin/2), sep = "_"))
   CE$latlon3 <- as.factor(paste(sg*1.5 + 3*floor(CE$latin/3),1.5+3*floor(CE$lonmin/3), sep = "_"))
   
-  CE <- setup_IO_regions(CE, regY2=TRUE, regA4 = TRUE)
+  loc <- grep(".NO",names(CE))
+  CE[,loc][is.na(CE[,loc])] <- 0
+  loc <- grep(".MT",names(CE))
+  CE[,loc] <- NULL
+  
+  
+  CE <- setup_IO_regions(CE, regY2=TRUE, regB3 = TRUE)
   return(CE)
 }
 
@@ -56,26 +66,21 @@ plot_patterns <- function(llmn, sp, spreg) {
   plot_IO(plot_title = "", uselims = c(20, 130, -50, 25), sp = spreg, newm=F, lwdm=3, axes = F, tcol = 1, mapfill = TRUE)
 }
 
+#' Allocate statistical weights to each row.
+#'
+#' The function returns a vector indicating a statistical weight to apply to the row, based on the stratum of which the row is a member.
+#' @param dat Input dataset
+#' @param wttype Type of statistical weighting method; 'equal' gives equal weight to all rows, 'area' weights rows in inverse proportion to the number of rows per stratum; 'catch' weights rows in proportion to the catch in the stratum divided by the number of rows in the stratum; cell_area weights rows in proportion to the ocean area of the stratum divided by the number of rows in the stratum
+#' @param catch An optional vector of catch per stratum.
+#' @param sp The species to be used for catch weighting.
+#' @param cell_areas An object containing the areas of all cells.
+#' @return A vector indicating the statistical weight to apply to the stratum of which the row is a member.
+#'
 mk_wts <- function(dat, wttype, catch = NULL, sp = NULL, cell_areas = NA) {
   if (wttype == "equal")
     wts <- NULL
   if (wttype == "propn")
     wts <- catch
-  # if (wttype == "area") {
-  #   a <- tapply(dat$latlong, list(dat$latlong, dat$yrqtr), length)
-  #   i <- match(dat$latlong, rownames(a))
-  #   j <- match(dat$yrqtr, colnames(a))
-  #   n <- mapply("[", list(a), i, j)
-  #   wts <- 1/n
-  # }
-  # if (wttype == "cell_area") {
-  #   areas <- cell_areas$garea[match(dat$latlong, cell_areas$latlong)]
-  #   a <- tapply(dat$latlong, list(dat$latlong, dat$yrqtr), length)
-  #   i <- match(dat$latlong, rownames(a))
-  #   j <- match(dat$yrqtr, colnames(a))
-  #   n <- mapply("[", list(a), i, j)
-  #   wts <- areas/n
-  # }
   if (wttype == "area") {
     a <- aggregate(dat$latlong, list(dat$latlong, dat$yrqtr), length)
     i <- match(paste(dat$latlong, dat$yrqtr), paste(a[,1], a[,2]))
@@ -501,3 +506,51 @@ setup_IO_regions <- function(dat, regY=F, regY1=F, regY2=F, regB=F, regB1=F, reg
   }
   return(dat)
 }
+
+#' Diagnostic plots for Gaussian glm.
+#'
+#' The function produces 2 Gaussian diagnostic plots: a frequency histogram and a QQ plot.
+#' @param res Fitted model for diagnostics.
+#' @param ti Titles for the plots.
+#'
+plotdiags <- function(res, ti = "", ...) {
+  hist(res, nclass = 200, freq = F, xlab = "Residuals", main = ti, ...)
+  lines(-300:300, dnorm(-300:300, sd = sd(res)), col = 2)
+  sdres <- res/sd(res)
+  qqDist(sdres, add.median = T)
+}
+
+#' QQ plot for Gaussian glm.
+#'
+#' The function produces a QQ plot for a GLM.
+#' @param x Residuals or standardized residuals.
+#' @param standardise Standardize the residuals if TRUE.
+#' @param add.median Add median line if TRUE.
+#' @param ... Other qqnorm() parameters.
+#'
+qqDist <- function(x, standardise = F, add.median = F, ...) {
+  n <- length(x)
+  seq.length <- min(1000, n)
+  if (standardise) {
+    SEQ <- seq(1, 2 * n + 1, length = seq.length)/2
+    U <- qnorm(qbeta(0.975, SEQ, rev(SEQ)))
+    L <- qnorm(qbeta(0.025, SEQ, rev(SEQ)))
+    if (add.median)
+      M <- qnorm(qbeta(0.5, SEQ, rev(SEQ)))
+  } else {
+    SD <- sqrt(var(x) * (n + 1)/n)
+    SEQ <- seq(1, 2 * n + 1, length = seq.length)/2
+    U <- mean(x) + SD * qt(qbeta(0.975, SEQ, rev(SEQ)), n - 1)
+    L <- mean(x) + SD * qt(qbeta(0.025, SEQ, rev(SEQ)), n - 1)
+    if (add.median)
+      M <- mean(x) + SD * qt(qbeta(0.5, SEQ, rev(SEQ)), n - 1)
+  }
+  X <- qnorm((SEQ - 0.25)/(n + 0.5))
+  qqnorm(x, main = "", ...)
+  lines(X, U, type = "l", col = 2)
+  lines(X, L, type = "l", col = 2)
+  if (add.median)
+    lines(X, M, type = "l", col = 2)
+  invisible()
+}
+
